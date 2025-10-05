@@ -533,15 +533,22 @@ def main(filename=None, seed=8346, data_count=1000, generations=200, population_
     
     # 计算测试集RMSE - 使用标准化后的数据，添加异常值处理
     test_predictions_scaled = []
+    problematic_predictions_count = 0
     for row in test_X_scaled:
         try:
             pred = func(*row)
             # 检查异常值
             if np.isnan(pred) or np.isinf(pred) or np.iscomplex(pred):
                 pred = 999999999
+                problematic_predictions_count += 1
             test_predictions_scaled.append(pred)
-        except:
-            test_predictions_scaled.append(999999999)
+        except Exception as e:
+            pred = 999999999
+            problematic_predictions_count += 1
+            test_predictions_scaled.append(pred)
+    
+    if problematic_predictions_count > 0:
+        print(f"警告: 在测试集预测中，有 {problematic_predictions_count} 个预测值被替换为 999999999。")
     
     test_rmse = np.sqrt(mean_squared_error(test_Y_scaled, test_predictions_scaled))
     print(f"测试集RMSE: {test_rmse:.6f}")
