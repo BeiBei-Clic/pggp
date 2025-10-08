@@ -360,8 +360,9 @@ def main(filename=None, seed=8346, data_count=1000, generations=200, population_
     if filename is None:
         file_path = "/home/xyh/pggp/dataset/Feynman_with_units/I.6.2"
     else:
-        dataset_path = "benchmark_dataset/"
-        file_path = os.path.join(dataset_path, filename + '.txt')
+        dataset_path = "dataset/Feynman_with_units/"
+        # 构建正确的文件名：I. + filename
+        file_path = os.path.join(dataset_path, "I." + filename)
     
     global n_variables
     global input_X
@@ -378,16 +379,31 @@ def main(filename=None, seed=8346, data_count=1000, generations=200, population_
                 if count >= data_count:  # 读取指定条数的数据
                     break
                 
-                data = line.strip().split()
+                line = line.strip()
+                if not line:  # 跳过空行
+                    continue
+                    
+                data = line.split()
+                if len(data) < 2:  # 确保至少有输入和输出
+                    continue
+                    
                 x = list(map(float, data[:-1]))
                 y = float(data[-1])
                 all_X.append(x)
                 all_Y.append(y)
                 count += 1
+    else:
+        raise FileNotFoundError(f"数据文件不存在: {file_path}")
 
-    # 按80%训练集和20%测试集分割数据
+    # 检查是否有足够的数据
     total_samples = len(all_X)
-    train_size = int(total_samples * 0.8)
+    if total_samples < 5:  # 至少需要5个样本
+        raise ValueError(f"数据量不足，只读取到 {total_samples} 个样本，至少需要5个样本")
+    
+    # 按80%训练集和20%测试集分割数据，但确保至少有1个训练样本和1个测试样本
+    train_size = max(1, int(total_samples * 0.8))
+    if train_size >= total_samples:
+        train_size = total_samples - 1
     
     train_X = np.array(all_X[:train_size])
     train_Y = np.array(all_Y[:train_size])
