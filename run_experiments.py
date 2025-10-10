@@ -4,7 +4,7 @@ import os
 from main import main
 
 # 指定的6个数据集
-datasets = ["6.2", "6.2a", "12.1", "12.5", "14.4", "25.13"]
+datasets = ["6.2","6.2b","12.4","14.3","14.4","25.13"]
 
 # 随机种子0-9
 seeds = list(range(10))
@@ -19,7 +19,7 @@ def run_experiments():
         # 运行10次实验
         for seed in seeds:
             print(f"  运行种子 {seed}", end=" ... ")
-            result = main(filename=dataset, seed=seed, data_count=1000, generations=200, population_size=300)
+            result = main(filename=dataset, seed=seed, data_count=100, generations=200, population_size=300)
             result['seed'] = seed
             results.append(result)
             print(f"完成 (RMSE: {result['test_rmse']:.6f})")
