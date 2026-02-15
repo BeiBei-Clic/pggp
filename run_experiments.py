@@ -28,53 +28,11 @@ def run_experiments():
             print(f"数据集 {dataset} 所有运行都失败")
             continue
             
-        # 计算测试集RMSE的分位数
-        test_mses = [r['test_rmse'] for r in results]
-        q25 = np.percentile(test_mses, 25)
-        q50 = np.percentile(test_mses, 50)  # 中位数
-        q75 = np.percentile(test_mses, 75)
-        
-        # 找到最接近分位数的实验
-        def find_closest(target):
-            distances = [abs(mse - target) for mse in test_mses]
-            return distances.index(min(distances))
-        
-        idx_q25 = find_closest(q25)
-        idx_q50 = find_closest(q50)
-        idx_q75 = find_closest(q75)
-        
-        # 保存结果
+        # 保存所有运行的完整结果
         dataset_results = {
             'dataset': dataset,
             'total_runs': len(results),
-            'quantiles': {
-                'q25': q25,
-                'q50': q50,
-                'q75': q75
-            },
-            'selected_experiments': {
-                'q25': {
-                    'seed': results[idx_q25]['seed'],
-                    'test_rmse': results[idx_q25]['test_rmse'],
-                    'fitness_trend': results[idx_q25]['fitness_trend'],
-                    'training_time': results[idx_q25]['training_time'],
-                    'best_individual': results[idx_q25]['best_individual']
-                },
-                'q50': {
-                    'seed': results[idx_q50]['seed'],
-                    'test_rmse': results[idx_q50]['test_rmse'],
-                    'fitness_trend': results[idx_q50]['fitness_trend'],
-                    'training_time': results[idx_q50]['training_time'],
-                    'best_individual': results[idx_q50]['best_individual']
-                },
-                'q75': {
-                    'seed': results[idx_q75]['seed'],
-                    'test_rmse': results[idx_q75]['test_rmse'],
-                    'fitness_trend': results[idx_q75]['fitness_trend'],
-                    'training_time': results[idx_q75]['training_time'],
-                    'best_individual': results[idx_q75]['best_individual']
-                }
-            }
+            'all_experiments': results
         }
         
         # 保存到文件
@@ -83,9 +41,12 @@ def run_experiments():
             json.dump(dataset_results, f, indent=2, ensure_ascii=False)
         
         print(f"数据集 {dataset} 结果已保存到 {output_file}")
-        print(f"  Q25 RMSE: {q25:.6f} (种子 {results[idx_q25]['seed']})")
-        print(f"  Q50 RMSE: {q50:.6f} (种子 {results[idx_q50]['seed']})")
-        print(f"  Q75 RMSE: {q75:.6f} (种子 {results[idx_q75]['seed']})")
+        
+        # 显示所有运行结果的摘要
+        test_rmses = [r['test_rmse'] for r in results]
+        print(f"  所有运行的RMSE结果:")
+        for i, rmse in enumerate(test_rmses):
+            print(f"    种子 {i}: {rmse:.6f}")
         print()
 
 if __name__ == "__main__":
