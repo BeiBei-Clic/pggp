@@ -36,3 +36,10 @@ python main.py
   publisher={IEEE}
 }
 ```
+
+## 对比试验
+```bash
+uv run python -u pggp_sr.py --dataset dataset/feynman/bonus_with_units --num_seeds 1 --max_input_points 100
+
+uv run python -u pggp_sr.py --dataset dataset/feynman/bonus_with_units/test_10.csv --num_seeds 10 --max_input_points 100 --max_tree_height 8 --max_tree_size 20
+```
