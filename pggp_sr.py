@@ -9,6 +9,7 @@ import copy
 import operator
 import warnings
 import logging
+import multiprocessing as mp
 from pathlib import Path
 from datetime import datetime
 from functools import partial
@@ -195,8 +196,9 @@ def is_complex(number):
 class PGGPWrapper:
     """PGGP算法封装类"""
 
-    def __init__(self, seed=0):
+    def __init__(self, seed=0, device="cuda:0"):
         self.seed = seed
+        self.device = device
         np.random.seed(seed)
         random.seed(seed)
 
@@ -269,9 +271,9 @@ class PGGPWrapper:
             self.model = Model.load_from_checkpoint(
                 str(weights_path),
                 cfg=self.cfg.architecture,
-                map_location="cuda",
+                map_location=self.device,
             )
-            self.model.cuda()
+            self.model.to(self.device)
             self.model.eval()
 
         fitfunc = partial(self.model.fitfunc, cfg_params=params_fit)
@@ -573,9 +575,9 @@ def run_single_experiment(
     csv_path,
     seed,
     max_input_points=100,
-    max_supported_vars=None,
     max_tree_height=17,
     max_tree_size=80,
+    device="cuda:0",
 ):
     """运行单次实验
 
@@ -583,22 +585,15 @@ def run_single_experiment(
         csv_path: 数据集路径
         seed: 随机种子
         max_input_points: 训练数据点数量
-        max_supported_vars: 模型支持的最大输入变量数（None表示不检查）
         max_tree_height: 表达式树最大高度
         max_tree_size: 表达式树最大节点数
+        device: 使用的CUDA设备（如cuda:0）
 
     Returns:
         包含实验结果的字典
     """
     # 1. 读取数据
     ground_truth, X, y = load_feynman_csv(csv_path)
-
-    if max_supported_vars is not None and X.shape[1] > max_supported_vars:
-        return {
-            "seed": seed,
-            "status": "skipped",
-            "skip_reason": f"input_dim_exceeds_model_capacity ({X.shape[1]} > {max_supported_vars})"
-        }
 
     # 2. 数据采样和划分
     if len(X) > max_input_points:
@@ -610,7 +605,7 @@ def run_single_experiment(
     )
 
     # 3. 运行PGGP
-    pggp = PGGPWrapper(seed=seed)
+    pggp = PGGPWrapper(seed=seed, device=device)
     pggp.setup_data(
         X_train,
         y_train,
@@ -664,10 +659,38 @@ def run_single_experiment(
     }
 
 
+def parse_gpu_ids(gpus_arg):
+    gpu_ids = [int(x.strip()) for x in gpus_arg.split(",") if x.strip()]
+    if len(gpu_ids) == 0:
+        raise ValueError("--gpus 不能为空，例如: --gpus 0,1")
+    return gpu_ids
+
+
+def gpu_worker(task_queue, result_queue, gpu_id):
+    torch.cuda.set_device(gpu_id)
+    device = f"cuda:{gpu_id}"
+    while True:
+        task = task_queue.get()
+        if task is None:
+            break
+        task_idx, csv_path, seed, max_input_points, max_tree_height, max_tree_size = task
+        result = run_single_experiment(
+            Path(csv_path),
+            seed,
+            max_input_points=max_input_points,
+            max_tree_height=max_tree_height,
+            max_tree_size=max_tree_size,
+            device=device,
+        )
+        result_queue.put((task_idx, result))
+
+
 def main():
     parser = argparse.ArgumentParser(description='PGGP标准化符号回归实验')
     parser.add_argument('--dataset', type=str, required=True,
                         help='数据集路径（文件夹或单个CSV文件）')
+    parser.add_argument('--gpus', type=str, required=True,
+                        help='使用的GPU编号列表，例如: 0,1,3')
     parser.add_argument('--num_seeds', type=int, default=10,
                         help='实验重复次数（默认10）')
     parser.add_argument('--max_input_points', type=int, default=100,
@@ -677,6 +700,15 @@ def main():
     parser.add_argument('--max_tree_size', type=int, default=80,
                         help='表达式树最大节点数（默认80）')
     args = parser.parse_args()
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("未检测到可用CUDA，请在GPU环境运行该脚本。")
+
+    gpu_ids = parse_gpu_ids(args.gpus)
+    total_gpus = torch.cuda.device_count()
+    for gpu_id in gpu_ids:
+        if gpu_id < 0 or gpu_id >= total_gpus:
+            raise ValueError(f"GPU编号越界: {gpu_id}, 当前可用GPU数量: {total_gpus}")
 
     # 读取模型可支持的最大变量数（100M模型）
     script_dir = Path(__file__).parent
@@ -700,6 +732,7 @@ def main():
     results_dir.mkdir(exist_ok=True)
 
     print(f"模型最大支持输入变量数: {max_supported_vars}")
+    print(f"使用GPU: {gpu_ids}（每块GPU固定1个进程）")
 
     # 对每个数据集运行实验
     for csv_file in csv_files:
@@ -723,22 +756,37 @@ def main():
             print(f"  跳过结果已保存到: {output_path}")
             continue
 
-        # 运行实验
-        results = []
+        # 多GPU并行运行：每块GPU一个进程
+        ctx = mp.get_context("spawn")
+        task_queue = ctx.Queue()
+        result_queue = ctx.Queue()
+        workers = []
+        for gpu_id in gpu_ids:
+            proc = ctx.Process(target=gpu_worker, args=(task_queue, result_queue, gpu_id))
+            proc.start()
+            workers.append(proc)
+
         for seed in range(args.num_seeds):
-            print(f"  Seed {seed}/{args.num_seeds - 1}...")
-            result = run_single_experiment(
-                csv_file,
+            print(f"  提交 Seed {seed}/{args.num_seeds - 1}...")
+            task_queue.put((
+                seed,
+                str(csv_file),
                 seed,
                 args.max_input_points,
-                max_supported_vars=max_supported_vars,
-                max_tree_height=args.max_tree_height,
-                max_tree_size=args.max_tree_size,
-            )
-            if result.get("status") == "skipped":
-                print(f"    跳过: {result['skip_reason']}")
-                continue
-            results.append(result)
+                args.max_tree_height,
+                args.max_tree_size,
+            ))
+
+        for _ in workers:
+            task_queue.put(None)
+
+        results = [None] * args.num_seeds
+        for _ in range(args.num_seeds):
+            idx, result = result_queue.get()
+            results[idx] = result
+
+        for proc in workers:
+            proc.join()
 
         # 保存结果
         output = {
