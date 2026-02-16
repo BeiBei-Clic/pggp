@@ -1,0 +1,7 @@
+{
+  "dataset": "test_1",
+  "ground_truth": "E_n**(-2.0)*c**2.0*hbar**2.0",
+  "skipped": true,
+  "skip_reason": "input_dim_exceeds_model_capacity (4 > 3)",
+  "runs": []
+}

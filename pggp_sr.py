@@ -723,12 +723,12 @@ def main():
     if dataset_path.is_file():
         csv_files = [dataset_path]
     elif dataset_path.is_dir():
-        csv_files = sorted(dataset_path.glob('*.csv'))
+        csv_files = sorted(dataset_path.glob('**/*.csv'))
     else:
         raise FileNotFoundError(f"数据集路径不存在: {dataset_path}")
 
     # 创建结果目录
-    results_dir = Path("results")
+    results_dir = Path("result")
     results_dir.mkdir(exist_ok=True)
 
     print(f"模型最大支持输入变量数: {max_supported_vars}")
@@ -750,7 +750,10 @@ def main():
                 "skip_reason": f"input_dim_exceeds_model_capacity ({X_full.shape[1]} > {max_supported_vars})",
                 "runs": []
             }
-            output_path = results_dir / f"{csv_file.stem}_pggp.json"
+            # 获取数据集相对于 dataset 根目录的相对路径
+            relative_path = csv_file.relative_to(dataset_path)
+            output_path = results_dir / relative_path.parent / f"{csv_file.stem}_pggp.json"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             with open(output_path, 'w') as f:
                 json.dump(output, f, indent=2)
             print(f"  跳过结果已保存到: {output_path}")
@@ -795,7 +798,10 @@ def main():
             "runs": results
         }
 
-        output_path = results_dir / f"{csv_file.stem}_pggp.json"
+        # 获取数据集相对于 dataset 根目录的相对路径
+        relative_path = csv_file.relative_to(dataset_path)
+        output_path = results_dir / relative_path.parent / f"{csv_file.stem}_pggp.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'w') as f:
             json.dump(output, f, indent=2)
 
