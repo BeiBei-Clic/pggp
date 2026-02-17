@@ -85,6 +85,26 @@ from src.nesymres.dclasses import FitParams, BFGSParams
 from backpropagation import backpropogation
 
 
+def get_result_path(csv_path: str | Path, base_result_dir: Path, input_path: Path) -> Path:
+    """计算结果保存路径，确保 result/ 与 dataset/ 结构一致
+
+    例如：dataset/feynman/test_1.csv → result/feynman/test_1_pggp.json
+    """
+    csv_path = Path(csv_path)
+    # 查找 dataset/ 根目录作为锚点
+    for parent in [csv_path] + list(csv_path.parents):
+        if 'dataset' in parent.parts:
+            idx = parent.parts.index('dataset')
+            anchor_path = Path(*parent.parts[:idx+1])
+            break
+    else:
+        anchor_path = input_path.parent
+    relative_path = csv_path.relative_to(anchor_path)
+    # 添加算法名后缀
+    stem = relative_path.stem
+    return base_result_dir / relative_path.with_name(f"{stem}_pggp.json")
+
+
 def convert_to_list(trimmed_eq, accurate_constant=False, n_variables=None):
     """转换表达式列表
 
@@ -421,7 +441,7 @@ class PGGPWrapper:
         else:
             return gp.mutUniform(individual, expr=self.toolbox.expr_mut, pset=self.pset)
 
-    def setup_data(self, X_train, y_train, X_test, y_test, max_tree_height=17, max_tree_size=80):
+    def setup_data(self, X_train, y_train, X_test, y_test, max_tree_height=17, max_tree_size=80, pop_size=200):
         """设置数据"""
         self.X_train = X_train
         self.y_train = y_train
@@ -455,8 +475,7 @@ class PGGPWrapper:
         self.toolbox.register("population", tools.initRepeat, list, self.toolbox.individual)
 
         # 创建初始种群：优先加入Transformer初始化个体，再补充满足复杂度约束的随机个体
-        target_pop_size = 200
-        max_init_attempts = target_pop_size * 200
+        max_init_attempts = pop_size * 200
         pop = []
 
         transformer_init_ind = self.toolbox.individual()
@@ -465,15 +484,15 @@ class PGGPWrapper:
                 pop.append(copy.deepcopy(transformer_init_ind))
 
         attempts = 0
-        while len(pop) < target_pop_size and attempts < max_init_attempts:
+        while len(pop) < pop_size and attempts < max_init_attempts:
             candidate = self.toolbox.random_individual()
             if candidate.height <= max_tree_height and len(candidate) <= max_tree_size:
                 pop.append(candidate)
             attempts += 1
 
-        if len(pop) < target_pop_size:
+        if len(pop) < pop_size:
             raise ValueError(
-                f"无法在限制条件下构造初始种群: size={len(pop)}/{target_pop_size}, "
+                f"无法在限制条件下构造初始种群: size={len(pop)}/{pop_size}, "
                 f"max_tree_height={max_tree_height}, max_tree_size={max_tree_size}"
             )
 
@@ -577,6 +596,8 @@ def run_single_experiment(
     max_input_points=100,
     max_tree_height=17,
     max_tree_size=80,
+    pop_size=200,
+    ngen=300,
     device="cuda:0",
 ):
     """运行单次实验
@@ -587,6 +608,8 @@ def run_single_experiment(
         max_input_points: 训练数据点数量
         max_tree_height: 表达式树最大高度
         max_tree_size: 表达式树最大节点数
+        pop_size: 种群大小
+        ngen: 迭代次数
         device: 使用的CUDA设备（如cuda:0）
 
     Returns:
@@ -613,9 +636,10 @@ def run_single_experiment(
         y_test,
         max_tree_height=max_tree_height,
         max_tree_size=max_tree_size,
+        pop_size=pop_size,
     )
 
-    best_individual, evolution_curve = pggp.run_evolution()
+    best_individual, evolution_curve = pggp.run_evolution(ngen=ngen)
 
     # 4. 计算指标
     train_rmse, train_r2 = compute_metrics(
@@ -666,23 +690,25 @@ def parse_gpu_ids(gpus_arg):
     return gpu_ids
 
 
-def gpu_worker(task_queue, result_queue, gpu_id):
+def gpu_worker(task_queue, result_queue, gpu_id, pop_size, ngen):
     torch.cuda.set_device(gpu_id)
     device = f"cuda:{gpu_id}"
     while True:
         task = task_queue.get()
         if task is None:
             break
-        task_idx, csv_path, seed, max_input_points, max_tree_height, max_tree_size = task
+        file_idx, seed_idx, csv_path, seed, max_input_points, max_tree_height, max_tree_size = task
         result = run_single_experiment(
             Path(csv_path),
             seed,
             max_input_points=max_input_points,
             max_tree_height=max_tree_height,
             max_tree_size=max_tree_size,
+            pop_size=pop_size,
+            ngen=ngen,
             device=device,
         )
-        result_queue.put((task_idx, result))
+        result_queue.put((file_idx, seed_idx, result))
 
 
 def main():
@@ -699,6 +725,10 @@ def main():
                         help='表达式树最大高度（默认17）')
     parser.add_argument('--max_tree_size', type=int, default=80,
                         help='表达式树最大节点数（默认80）')
+    parser.add_argument('--pop_size', type=int, default=200,
+                        help='种群大小（默认200）')
+    parser.add_argument('--ngen', type=int, default=300,
+                        help='迭代次数（默认300）')
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -712,6 +742,7 @@ def main():
 
     # 读取模型可支持的最大变量数（100M模型）
     script_dir = Path(__file__).parent
+
     with open(script_dir / 'jupyter' / '100M' / 'eq_setting.json', 'r') as f:
         eq_setting = json.load(f)
     cfg = omegaconf.OmegaConf.load(script_dir / '100M' / 'config.yaml')
@@ -734,78 +765,93 @@ def main():
     print(f"模型最大支持输入变量数: {max_supported_vars}")
     print(f"使用GPU: {gpu_ids}（每块GPU固定1个进程）")
 
-    # 对每个数据集运行实验
+    # 第一步：过滤出有效文件并收集 ground truth
+    valid_files = []
+    skipped_files = []
+
     for csv_file in csv_files:
-        print(f"\n正在处理: {csv_file.name}")
-
-        # 读取ground truth
         ground_truth, X_full, _ = load_feynman_csv(csv_file)
-
         if X_full.shape[1] > max_supported_vars:
-            print(f"  跳过: 输入维度 {X_full.shape[1]} 超过模型上限 {max_supported_vars}")
-            output = {
-                "dataset": csv_file.stem,
-                "ground_truth": ground_truth,
-                "skipped": True,
-                "skip_reason": f"input_dim_exceeds_model_capacity ({X_full.shape[1]} > {max_supported_vars})",
-                "runs": []
-            }
-            # 获取数据集相对于 dataset 根目录的相对路径
-            relative_path = csv_file.relative_to(dataset_path)
-            output_path = results_dir / relative_path.parent / f"{csv_file.stem}_pggp.json"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_path, 'w') as f:
-                json.dump(output, f, indent=2)
-            print(f"  跳过结果已保存到: {output_path}")
-            continue
+            skipped_files.append((csv_file, ground_truth, X_full.shape[1]))
+        else:
+            valid_files.append((csv_file, ground_truth))
 
-        # 多GPU并行运行：每块GPU一个进程
-        ctx = mp.get_context("spawn")
-        task_queue = ctx.Queue()
-        result_queue = ctx.Queue()
-        workers = []
-        for gpu_id in gpu_ids:
-            proc = ctx.Process(target=gpu_worker, args=(task_queue, result_queue, gpu_id))
-            proc.start()
-            workers.append(proc)
+    # 保存跳过的文件结果
+    for csv_file, ground_truth, dim in skipped_files:
+        print(f"跳过: {csv_file.name} (输入维度 {dim} 超过模型上限 {max_supported_vars})")
+        output = {
+            "dataset": csv_file.stem,
+            "ground_truth": ground_truth,
+            "skipped": True,
+            "skip_reason": f"input_dim_exceeds_model_capacity ({dim} > {max_supported_vars})",
+            "runs": []
+        }
+        output_path = get_result_path(csv_file, results_dir, dataset_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w') as f:
+            json.dump(output, f, indent=2)
 
-        for seed in range(args.num_seeds):
-            print(f"  提交 Seed {seed}/{args.num_seeds - 1}...")
-            task_queue.put((
-                seed,
+    if not valid_files:
+        print("没有有效文件需要处理")
+        return
+
+    # 第二步：构建所有任务（file_idx, seed_idx, csv_path, seed, ...）
+    all_tasks = []
+    for file_idx, (csv_file, _) in enumerate(valid_files):
+        for seed_idx in range(args.num_seeds):
+            all_tasks.append((
+                file_idx,
+                seed_idx,
                 str(csv_file),
-                seed,
+                seed_idx,
                 args.max_input_points,
                 args.max_tree_height,
                 args.max_tree_size,
             ))
 
-        for _ in workers:
-            task_queue.put(None)
+    print(f"共 {len(valid_files)} 个有效文件，{len(all_tasks)} 个任务待处理")
 
-        results = [None] * args.num_seeds
-        for _ in range(args.num_seeds):
-            idx, result = result_queue.get()
-            results[idx] = result
+    # 第三步：创建一次进程池处理所有任务
+    ctx = mp.get_context("spawn")
+    task_queue = ctx.Queue()
+    result_queue = ctx.Queue()
+    workers = []
+    for gpu_id in gpu_ids:
+        proc = ctx.Process(target=gpu_worker, args=(task_queue, result_queue, gpu_id, args.pop_size, args.ngen))
+        proc.start()
+        workers.append(proc)
 
-        for proc in workers:
-            proc.join()
+    # 提交所有任务
+    for task in all_tasks:
+        task_queue.put(task)
 
-        # 保存结果
+    # 发送停止信号
+    for _ in workers:
+        task_queue.put(None)
+
+    # 第四步：收集结果并按 file_idx 分组
+    results_by_file = {i: [None] * args.num_seeds for i in range(len(valid_files))}
+    for _ in range(len(all_tasks)):
+        file_idx, seed_idx, result = result_queue.get()
+        results_by_file[file_idx][seed_idx] = result
+
+    # 等待所有进程结束
+    for proc in workers:
+        proc.join()
+
+    # 第五步：为每个文件保存结果
+    for file_idx, (csv_file, ground_truth) in enumerate(valid_files):
+        runs = results_by_file[file_idx]
         output = {
             "dataset": csv_file.stem,
             "ground_truth": ground_truth,
-            "runs": results
+            "runs": runs
         }
-
-        # 获取数据集相对于 dataset 根目录的相对路径
-        relative_path = csv_file.relative_to(dataset_path)
-        output_path = results_dir / relative_path.parent / f"{csv_file.stem}_pggp.json"
+        output_path = get_result_path(csv_file, results_dir, dataset_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'w') as f:
             json.dump(output, f, indent=2)
-
-        print(f"  结果已保存到: {output_path}")
+        print(f"结果已保存: {output_path}")
 
 
 if __name__ == "__main__":

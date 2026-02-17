@@ -43,7 +43,7 @@ env/
 Thumbs.db
 
 # Experiment results (optional - comment out if you want to track results)
-results/
+result/
 weights/
 
 # Data files (optional - comment out if you want to track data)

@@ -1,0 +1,26 @@
+[project]
+name = "pggp"
+version = "0.1.0"
+description = "PGGP symbolic regression experiments"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "click",
+    "deap",
+    "h5py",
+    "hydra-core",
+    "numexpr",
+    "numpy",
+    "omegaconf",
+    "pandas",
+    "pytorch-lightning",
+    "scikit-learn",
+    "scipy",
+    "sympy",
+    "sympytorch",
+    "torch",
+    "tqdm",
+]
+
+[tool.uv]
+package = false
